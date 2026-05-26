@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -62,37 +63,72 @@ def card(title, value):
     </div>
     """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=300)
-def get_price(symbol):
-    return yf.Ticker(symbol).history(period="1d")["Close"].iloc[-1]
+def safe_fmt(value, default="N/A"):
+    if value is None:
+        return default
+    try:
+        if pd.isna(value):
+            return default
+    except Exception:
+        pass
+    return value
 
-@st.cache_data(ttl=600)
-def get_stock_data(symbol):
-    stock = yf.Ticker(symbol)
-    info = stock.info
-    df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return info, df
+def fmt_b(v):
+    return "N/A" if not v else f"${v/1_000_000_000:.1f}B"
 
-# 市场环境
-spy_price = get_price("SPY")
-qqq_price = get_price("QQQ")
-vix_price = get_price("^VIX")
+def fmt_pct(v):
+    return "N/A" if v is None else f"{v*100:.1f}%"
+
+def fmt_num(v):
+    return "N/A" if v is None else f"{v:.1f}"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_price_safe(symbol):
+    try:
+        data = yf.download(symbol, period="5d", auto_adjust=False, progress=False)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        if data.empty:
+            return None
+        return float(data["Close"].dropna().iloc[-1])
+    except Exception:
+        return None
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_stock_data_safe(symbol):
+    try:
+        stock = yf.Ticker(symbol)
+        info = stock.info
+        time.sleep(0.3)
+        df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if df.empty:
+            return info, df, None
+        return info, df, None
+    except Exception as e:
+        return {}, pd.DataFrame(), str(e)
+
+spy_price = get_price_safe("SPY")
+qqq_price = get_price_safe("QQQ")
+vix_price = get_price_safe("^VIX")
 
 st.subheader("🌍 市场环境")
 m1, m2, m3 = st.columns(3)
-with m1: card("SPY", f"{spy_price:.2f}")
-with m2: card("QQQ", f"{qqq_price:.2f}")
-with m3: card("VIX", f"{vix_price:.2f}")
+with m1: card("SPY", f"{spy_price:.2f}" if spy_price else "N/A")
+with m2: card("QQQ", f"{qqq_price:.2f}" if qqq_price else "N/A")
+with m3: card("VIX", f"{vix_price:.2f}" if vix_price else "N/A")
 
-info, df = get_stock_data(ticker)
+info, df, error_msg = get_stock_data_safe(ticker)
+
+if error_msg:
+    st.warning("数据源暂时受限或连接失败，可能是 Yahoo Finance 限流。请稍后刷新，或换一只股票测试。")
+    st.caption(error_msg)
 
 if df.empty:
-    st.error("没有下载到数据，请检查股票代码。")
+    st.error("没有下载到股票数据。请稍后重试，或检查股票代码是否正确。")
     st.stop()
 
-# 技术指标
 df["MA20"] = df["Close"].rolling(20).mean()
 df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
@@ -108,24 +144,20 @@ high_close = (df["High"] - df["Close"].shift()).abs()
 low_close = (df["Low"] - df["Close"].shift()).abs()
 df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-# 核心数据
-current_price = df["Close"].iloc[-1]
-all_time_high = df["High"].max()
+current_price = float(df["Close"].iloc[-1])
+all_time_high = float(df["High"].max())
 drawdown = (current_price - all_time_high) / all_time_high * 100
-rsi = df["RSI"].iloc[-1]
-atr = df["ATR"].iloc[-1]
-ma20 = df["MA20"].iloc[-1]
-ma50 = df["MA50"].iloc[-1]
-ma200 = df["MA200"].iloc[-1]
+rsi = float(df["RSI"].iloc[-1])
+atr = float(df["ATR"].iloc[-1])
+ma200 = float(df["MA200"].iloc[-1])
 
 last_52 = df.tail(252)
-high_52 = last_52["High"].max()
-low_52 = last_52["Low"].min()
-current_volume = df["Volume"].iloc[-1]
-avg_volume = df["Volume"].tail(30).mean()
+high_52 = float(last_52["High"].max())
+low_52 = float(last_52["Low"].min())
+current_volume = float(df["Volume"].iloc[-1])
+avg_volume = float(df["Volume"].tail(30).mean())
 volume_ratio = current_volume / avg_volume if avg_volume else 0
 
-# 财务数据
 market_cap = info.get("marketCap")
 beta = info.get("beta")
 trailing_pe = info.get("trailingPE")
@@ -138,16 +170,6 @@ sector = info.get("sector", "N/A")
 industry = info.get("industry", "N/A")
 summary = info.get("longBusinessSummary", "")
 
-def fmt_b(v):
-    return "N/A" if not v else f"${v/1_000_000_000:.1f}B"
-
-def fmt_pct(v):
-    return "N/A" if v is None else f"{v*100:.1f}%"
-
-def fmt_num(v):
-    return "N/A" if v is None else f"{v:.1f}"
-
-# 主题识别
 theme_words = {
     "AI": ["artificial intelligence", "ai", "machine learning", "data analytics", "cloud"],
     "机器人": ["robot", "robotics", "automation"],
@@ -162,7 +184,6 @@ text_blob = f"{sector} {industry} {summary}".lower()
 themes = [name for name, words in theme_words.items() if any(w in text_blob for w in words)]
 theme_text = "、".join(themes) if themes else "未识别明显热点"
 
-# 核心卡片
 st.subheader(f"📊 {ticker}")
 cols = st.columns(8)
 items = [
@@ -195,7 +216,6 @@ for col, item in zip(fcols, fitems):
     with col:
         card(item[0], item[1])
 
-# AI评分
 score = 50
 positive = []
 risk = []
@@ -252,7 +272,7 @@ if profit_margin is not None:
     else:
         risk.append("公司净利率为负，盈利能力仍有压力")
 
-if vix_price > 25:
+if vix_price and vix_price > 25:
     score -= 10
     risk.append("VIX高于25，市场整体风险较高")
 
@@ -281,7 +301,6 @@ if not signal:
     signal.append("暂无强信号")
 
 st.subheader("🤖 AI量化判断")
-
 a1, a2 = st.columns([1.1, 2.2])
 
 with a1:
@@ -305,11 +324,9 @@ with a2:
     </div>
     """, unsafe_allow_html=True)
 
-# 图表
 chart_df = df.tail(252)
 
 st.subheader("📉 近一年K线 + 成交量")
-
 g1, g2 = st.columns([1.25, 1])
 
 fig = go.Figure()
