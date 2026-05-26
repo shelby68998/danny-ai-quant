@@ -63,16 +63,6 @@ def card(title, value):
     </div>
     """, unsafe_allow_html=True)
 
-def safe_fmt(value, default="N/A"):
-    if value is None:
-        return default
-    try:
-        if pd.isna(value):
-            return default
-    except Exception:
-        pass
-    return value
-
 def fmt_b(v):
     return "N/A" if not v else f"${v/1_000_000_000:.1f}B"
 
@@ -103,8 +93,6 @@ def get_stock_data_safe(symbol):
         df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        if df.empty:
-            return info, df, None
         return info, df, None
     except Exception as e:
         return {}, pd.DataFrame(), str(e)
@@ -149,6 +137,8 @@ all_time_high = float(df["High"].max())
 drawdown = (current_price - all_time_high) / all_time_high * 100
 rsi = float(df["RSI"].iloc[-1])
 atr = float(df["ATR"].iloc[-1])
+ma20 = float(df["MA20"].iloc[-1])
+ma50 = float(df["MA50"].iloc[-1])
 ma200 = float(df["MA200"].iloc[-1])
 
 last_52 = df.tail(252)
@@ -184,6 +174,29 @@ text_blob = f"{sector} {industry} {summary}".lower()
 themes = [name for name, words in theme_words.items() if any(w in text_blob for w in words)]
 theme_text = "、".join(themes) if themes else "未识别明显热点"
 
+recent_lows = last_52["Low"].nsmallest(8).mean()
+recent_highs = last_52["High"].nlargest(8).mean()
+support = recent_lows
+resistance = recent_highs
+
+valuation_risk = "正常"
+valuation_class = "good"
+if ps is not None and ps > 30:
+    valuation_risk = "极高估值"
+    valuation_class = "bad"
+elif ps is not None and ps > 15:
+    valuation_risk = "偏高估值"
+    valuation_class = "mid"
+elif trailing_pe is not None and trailing_pe > 80:
+    valuation_risk = "高估值"
+    valuation_class = "mid"
+
+money_attention = "正常"
+if volume_ratio > 2:
+    money_attention = "明显放量"
+elif volume_ratio < 0.7:
+    money_attention = "成交偏冷"
+
 st.subheader(f"📊 {ticker}")
 cols = st.columns(8)
 items = [
@@ -193,8 +206,8 @@ items = [
     ("量比", f"{volume_ratio:.2f}x"),
     ("52高", f"${high_52:.0f}"),
     ("52低", f"${low_52:.0f}"),
-    ("ATR", f"{atr:.1f}"),
-    ("Beta", fmt_num(beta))
+    ("支撑", f"${support:.0f}"),
+    ("压力", f"${resistance:.0f}")
 ]
 for col, item in zip(cols, items):
     with col:
@@ -216,6 +229,36 @@ for col, item in zip(fcols, fitems):
     with col:
         card(item[0], item[1])
 
+# Danny策略模型
+deep_drop_ok = drawdown <= -60
+growth_ok = revenue_growth is not None and revenue_growth >= 0.3
+profitable_ok = profit_margin is not None and profit_margin > 0
+not_overheated = rsi < 70
+has_theme = len(themes) > 0
+volume_ok = volume_ratio >= 0.7
+
+danny_checks = [
+    ("跌幅达到60%安全区", deep_drop_ok),
+    ("收入增速超过30%", growth_ok),
+    ("公司已经盈利", profitable_ok),
+    ("RSI没有过热", not_overheated),
+    ("具备热点/核心赛道", has_theme),
+    ("成交量没有明显萎缩", volume_ok),
+]
+
+danny_score = sum(1 for _, ok in danny_checks if ok)
+
+if danny_score >= 5 and deep_drop_ok:
+    danny_view = "符合Danny深跌模型"
+    danny_class = "good"
+elif danny_score >= 4:
+    danny_view = "接近条件，继续观察"
+    danny_class = "mid"
+else:
+    danny_view = "暂不符合抄底模型"
+    danny_class = "bad"
+
+# AI评分
 score = 50
 positive = []
 risk = []
@@ -272,6 +315,18 @@ if profit_margin is not None:
     else:
         risk.append("公司净利率为负，盈利能力仍有压力")
 
+if ps is not None and ps > 30:
+    score -= 15
+    risk.append("P/S估值极高，估值回撤风险明显")
+elif ps is not None and ps > 15:
+    score -= 8
+    risk.append("P/S估值偏高，需要等待更好买点")
+
+if current_price < support * 1.05:
+    positive.append("股价接近近一年支撑区域")
+elif current_price > resistance * 0.95:
+    risk.append("股价接近近一年压力区域")
+
 if vix_price and vix_price > 25:
     score -= 10
     risk.append("VIX高于25，市场整体风险较高")
@@ -299,6 +354,60 @@ else:
 
 if not signal:
     signal.append("暂无强信号")
+
+# 操作建议
+short_term = "观望"
+mid_term = "继续跟踪"
+long_term = "根据估值谨慎判断"
+
+if rsi < 30 and current_price < support * 1.08:
+    short_term = "可小仓观察反弹"
+elif rsi > 70:
+    short_term = "不宜追高"
+
+if deep_drop_ok and growth_ok:
+    mid_term = "可考虑分批研究"
+elif drawdown > -40:
+    mid_term = "等待更深回调"
+
+if ps is not None and ps > 30:
+    long_term = "估值偏贵，长线需谨慎"
+elif growth_ok and profitable_ok:
+    long_term = "基本面较强，可长期跟踪"
+
+st.subheader("🧠 Danny策略判断")
+d1, d2, d3 = st.columns([1, 1, 1.2])
+
+with d1:
+    st.markdown(f"""
+    <div class="ai-box">
+        <div style="font-size:18px;">Danny模型：<span class="{danny_class}">{danny_view}</span></div>
+        <div style="font-size:28px; font-weight:800; margin-top:6px;">{danny_score}/6</div>
+        <div><b>估值状态：</b><span class="{valuation_class}">{valuation_risk}</span></div>
+        <div><b>资金关注：</b>{money_attention}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+with d2:
+    st.markdown(f"""
+    <div class="ai-box">
+        <b>操作建议</b>
+        <ul>
+            <li>短线：{short_term}</li>
+            <li>中线：{mid_term}</li>
+            <li>长线：{long_term}</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+
+with d3:
+    checks_html = "".join([f"<li>{'✅' if ok else '❌'} {name}</li>" for name, ok in danny_checks])
+    st.markdown(f"""
+    <div class="ai-box">
+        <b>Danny深跌模型条件</b>
+        <ul>{checks_html}</ul>
+    </div>
+    """, unsafe_allow_html=True)
 
 st.subheader("🤖 AI量化判断")
 a1, a2 = st.columns([1.1, 2.2])
@@ -341,6 +450,8 @@ fig.add_trace(go.Candlestick(
 fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MA20"], name="MA20"))
 fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MA50"], name="MA50"))
 fig.add_trace(go.Scatter(x=chart_df.index, y=chart_df["MA200"], name="MA200"))
+fig.add_hline(y=support, line_dash="dot", annotation_text="支撑")
+fig.add_hline(y=resistance, line_dash="dot", annotation_text="压力")
 
 fig.update_layout(
     template="plotly_white",
