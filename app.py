@@ -506,6 +506,104 @@ from openai import OpenAI
 
 st.subheader("🧠 GPT AI 分析中心")
 
+st.subheader("🚨 AI暴跌原因分析")
+
+crash_cache_key = f"{ticker}_crash_reason"
+
+if crash_cache_key not in st.session_state:
+    st.session_state[crash_cache_key] = None
+
+if st.button("🚨 为什么暴跌？"):
+
+    if st.session_state[crash_cache_key] is None:
+
+        with st.spinner("GPT 正在分析暴跌原因..."):
+
+            try:
+
+                stock = yf.Ticker(ticker)
+                news = stock.news
+
+                news_text = ""
+
+                for n in news[:10]:
+                    title = n.get("title", "")
+                    summary = n.get("summary", "")
+                    publisher = n.get("publisher", "")
+
+                    news_text += f"""
+标题: {title}
+来源: {publisher}
+摘要: {summary}
+
+"""
+
+                client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+                prompt = f"""
+你是一位专业美股暴跌原因分析师。
+
+股票：{ticker}
+
+当前数据：
+
+价格：{current_price}
+跌幅：{drawdown:.1f}%
+RSI：{rsi:.1f}
+量比：{volume_ratio:.2f}
+收入增速：{fmt_pct(revenue_growth)}
+P/S：{fmt_num(ps)}
+PE：{fmt_num(trailing_pe)}
+行业：{sector}
+主题：{theme_text}
+
+相关新闻：
+
+{news_text}
+
+请分析：
+
+1. 这只股票最近暴跌真正原因
+2. 是财报问题、指引问题、估值问题、AI替代、监管、竞争、机构出货还是情绪踩踏
+3. 是短期情绪问题还是长期逻辑恶化
+4. 是否属于“错杀”
+5. 是否可能继续大跌
+6. 是否适合抄底
+7. 最危险的点是什么
+8. 最终结论：
+   - 错杀机会
+   - 普通回调
+   - 高风险下跌
+   - 长期逻辑崩坏
+
+输出中文，直接、专业、像真正交易员。
+"""
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": "你是专业美股暴跌分析师。"},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.5,
+                    max_tokens=1400
+                )
+
+                st.session_state[crash_cache_key] = response.choices[0].message.content
+
+            except Exception as e:
+                st.error(f"暴跌分析失败: {e}")
+
+    st.markdown(f"""
+    <div class="ai-box">
+    {st.session_state[crash_cache_key].replace(chr(10), "<br>")}
+    </div>
+    """, unsafe_allow_html=True)
+
+if st.button("🧹 清除暴跌分析缓存"):
+    st.session_state[crash_cache_key] = None
+    st.rerun()
+
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 cache_key_deep = f"{ticker}_gpt_deep"
