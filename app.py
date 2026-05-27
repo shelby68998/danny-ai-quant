@@ -508,26 +508,35 @@ st.subheader("🧠 GPT AI 分析中心")
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
+cache_key_deep = f"{ticker}_gpt_deep"
+cache_key_plan = f"{ticker}_gpt_plan"
+cache_key_risk = f"{ticker}_gpt_risk"
+
+for key in [cache_key_deep, cache_key_plan, cache_key_risk]:
+    if key not in st.session_state:
+        st.session_state[key] = None
+
+def show_gpt_result(result):
+    if result:
+        st.markdown(f"""
+        <div class="ai-box">
+        {result.replace(chr(10), "<br>")}
+        </div>
+        """, unsafe_allow_html=True)
+
 b1, b2, b3 = st.columns(3)
 
-# =========================
-# 1. GPT 深度分析
-# =========================
 with b1:
-
     if st.button("🚀 GPT深度分析"):
-
-        with st.spinner("GPT 正在深度分析..."):
-
-            try:
-
-                prompt = f"""
+        if st.session_state[cache_key_deep] is None:
+            with st.spinner("GPT 正在深度分析..."):
+                try:
+                    prompt = f"""
 你是一位顶级美股基金经理。
 
 请深度分析股票 {ticker}。
 
 当前数据：
-
 价格：{current_price}
 距历史高点跌幅：{drawdown:.1f}%
 RSI：{rsi:.1f}
@@ -542,9 +551,10 @@ P/S：{fmt_num(ps)}
 行业：{sector}
 细分行业：{industry}
 热点主题：{theme_text}
+估值状态：{valuation_risk}
+Danny模型：{danny_view}
 
-请重点分析：
-
+请分析：
 1. 公司核心逻辑
 2. 当前估值是否危险
 3. 技术面强弱
@@ -555,57 +565,44 @@ P/S：{fmt_num(ps)}
 8. 是否值得长期关注
 9. 给出评级
 
-输出中文。
+输出中文，直接、专业、不要废话。
 """
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是专业华尔街基金经理。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.7,
+                        max_tokens=1200
+                    )
+                    st.session_state[cache_key_deep] = response.choices[0].message.content
+                except Exception as e:
+                    st.error(f"GPT深度分析失败: {e}")
 
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "你是专业华尔街基金经理。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.7,
-                    max_tokens=1200
-                )
+    show_gpt_result(st.session_state[cache_key_deep])
 
-                result = response.choices[0].message.content
-
-                st.markdown(f"""
-                <div class="ai-box">
-                {result.replace(chr(10), "<br>")}
-                </div>
-                """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"GPT分析失败: {e}")
-
-# =========================
-# 2. GPT 操作计划
-# =========================
 with b2:
-
     if st.button("📋 GPT操作计划"):
-
-        with st.spinner("GPT 正在制定交易计划..."):
-
-            try:
-
-                prompt = f"""
+        if st.session_state[cache_key_plan] is None:
+            with st.spinner("GPT 正在制定交易计划..."):
+                try:
+                    prompt = f"""
 你是一位职业交易员。
 
 请为股票 {ticker} 制定交易计划。
 
 当前数据：
-
 价格：{current_price}
 RSI：{rsi:.1f}
 距高点跌幅：{drawdown:.1f}%
 支撑位：{support:.2f}
 压力位：{resistance:.2f}
 量比：{volume_ratio:.2f}
+估值状态：{valuation_risk}
+Danny模型：{danny_view}
 
 请输出：
-
 1. 激进买点
 2. 保守买点
 3. 是否适合抄底
@@ -616,48 +613,34 @@ RSI：{rsi:.1f}
 8. 仓位建议
 9. 短线/中线/长线策略
 
-输出中文。
+输出中文，适合实盘参考，但提醒风险。
 """
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是顶级职业交易员。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.5,
+                        max_tokens=1000
+                    )
+                    st.session_state[cache_key_plan] = response.choices[0].message.content
+                except Exception as e:
+                    st.error(f"GPT操作计划失败: {e}")
 
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "你是顶级职业交易员。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.5,
-                    max_tokens=1000
-                )
+    show_gpt_result(st.session_state[cache_key_plan])
 
-                result = response.choices[0].message.content
-
-                st.markdown(f"""
-                <div class="ai-box">
-                {result.replace(chr(10), "<br>")}
-                </div>
-                """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"GPT操作计划失败: {e}")
-
-# =========================
-# 3. GPT 风险审查
-# =========================
 with b3:
-
     if st.button("⚠️ GPT风险审查"):
-
-        with st.spinner("GPT 正在审查风险..."):
-
-            try:
-
-                prompt = f"""
+        if st.session_state[cache_key_risk] is None:
+            with st.spinner("GPT 正在审查风险..."):
+                try:
+                    prompt = f"""
 你是一位极度谨慎的做空机构分析师。
 
 请从最悲观角度分析股票 {ticker}。
 
 当前数据：
-
 价格：{current_price}
 PE：{fmt_num(trailing_pe)}
 P/S：{fmt_num(ps)}
@@ -666,9 +649,9 @@ P/S：{fmt_num(ps)}
 Beta：{beta}
 行业：{sector}
 主题：{theme_text}
+估值状态：{valuation_risk}
 
 请重点分析：
-
 1. 最大雷点
 2. 估值泡沫风险
 3. 行业竞争风险
@@ -679,29 +662,28 @@ Beta：{beta}
 8. 最坏情况
 9. 为什么有人会做空它
 
-输出中文。
+输出中文，尖锐、谨慎、不要客套。
 """
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是华尔街做空机构分析师。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.8,
+                        max_tokens=1200
+                    )
+                    st.session_state[cache_key_risk] = response.choices[0].message.content
+                except Exception as e:
+                    st.error(f"GPT风险分析失败: {e}")
 
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "你是华尔街做空机构分析师。"},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.8,
-                    max_tokens=1200
-                )
+    show_gpt_result(st.session_state[cache_key_risk])
 
-                result = response.choices[0].message.content
-
-                st.markdown(f"""
-                <div class="ai-box">
-                {result.replace(chr(10), "<br>")}
-                </div>
-                """, unsafe_allow_html=True)
-
-            except Exception as e:
-                st.error(f"GPT风险分析失败: {e}")
+if st.button("🧹 清除当前股票GPT缓存"):
+    st.session_state[cache_key_deep] = None
+    st.session_state[cache_key_plan] = None
+    st.session_state[cache_key_risk] = None
+    st.rerun()
 chart_df = df.tail(252)
 
 st.subheader("📉 近一年K线 + 成交量")
