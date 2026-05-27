@@ -684,6 +684,105 @@ if st.button("🧹 清除当前股票GPT缓存"):
     st.session_state[cache_key_plan] = None
     st.session_state[cache_key_risk] = None
     st.rerun()
+    # =========================
+# 新闻 + 情绪分析
+# =========================
+
+st.subheader("📰 新闻 / 情绪雷达")
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_news_safe(symbol):
+    try:
+        news_items = yf.Ticker(symbol).news
+        return news_items[:8]
+    except Exception:
+        return []
+
+news_items = get_news_safe(ticker)
+
+if news_items:
+    news_titles = []
+
+    for item in news_items:
+        title = item.get("title", "")
+        publisher = item.get("publisher", "")
+        link = item.get("link", "")
+
+        if title:
+            news_titles.append(title)
+
+            st.markdown(f"""
+            <div class="ai-box">
+            <b>{title}</b><br>
+            来源：{publisher}<br>
+            <a href="{link}" target="_blank">打开新闻</a>
+            </div>
+            """, unsafe_allow_html=True)
+
+    if st.button("🧠 GPT 新闻情绪分析"):
+
+        news_key = f"{ticker}_gpt_news"
+
+        if news_key not in st.session_state:
+            st.session_state[news_key] = None
+
+        if st.session_state[news_key] is None:
+
+            with st.spinner("GPT 正在分析新闻情绪..."):
+
+                try:
+                    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+                    news_text = "\n".join(news_titles)
+
+                    prompt = f"""
+你是一位美股新闻与市场情绪分析师。
+
+请分析股票 {ticker} 最近新闻对股价的影响。
+
+新闻标题如下：
+
+{news_text}
+
+请输出：
+
+1. 新闻整体偏利多、利空还是中性
+2. 是否可能影响短期股价
+3. 是否只是噪音
+4. 是否涉及财报、订单、监管、诉讼、并购、降级、宏观风险
+5. 市场情绪评分 0-100
+6. 对短线交易的影响
+7. 对中长期投资的影响
+8. 最终结论
+
+输出中文，直接、专业。
+"""
+
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是专业美股新闻情绪分析师。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.6,
+                        max_tokens=1000
+                    )
+
+                    st.session_state[news_key] = response.choices[0].message.content
+
+                except Exception as e:
+                    st.error(f"新闻情绪分析失败: {e}")
+
+        if st.session_state[news_key]:
+
+            st.markdown(f"""
+            <div class="ai-box">
+            {st.session_state[news_key].replace(chr(10), "<br>")}
+            </div>
+            """, unsafe_allow_html=True)
+
+else:
+    st.info("暂时没有获取到相关新闻，可能是 Yahoo 新闻接口限制。")
 chart_df = df.tail(252)
 
 st.subheader("📉 近一年K线 + 成交量")
