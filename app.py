@@ -776,6 +776,93 @@ if st.session_state[news_cache_key]:
 if st.button("🧹 清除新闻情绪缓存"):
     st.session_state[news_cache_key] = None
     st.rerun()
+    # =========================
+# 风口预测 / 主题热度雷达
+# =========================
+
+st.subheader("🔥 风口预测 / 主题热度雷达")
+
+SHEET_ID = "1W3DZXgpDoyVSXYQN_XgAp4I5Uzv2I_SnBND2Kw2bPqc"
+SIGNALS_GID = "1861710963"
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_theme_signals():
+    url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SIGNALS_GID}"
+    df_theme = pd.read_csv(url)
+    return df_theme
+
+try:
+    theme_df = load_theme_signals()
+
+    if not theme_df.empty:
+        latest_time = theme_df["RunTime"].iloc[0] if "RunTime" in theme_df.columns else "N/A"
+
+        st.caption(f"数据更新时间：{latest_time}")
+
+        show_cols = ["Theme", "TodayCount", "Avg7", "Growth", "Score", "Status", "TopTitle", "TopSource"]
+        show_cols = [c for c in show_cols if c in theme_df.columns]
+
+        hot_df = theme_df.sort_values("Score", ascending=False).head(10)
+
+        st.dataframe(
+            hot_df[show_cols],
+            use_container_width=True,
+            hide_index=True
+        )
+
+        if st.button("🧠 GPT解读今日风口"):
+            with st.spinner("GPT 正在解读风口趋势..."):
+                try:
+                    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+                    theme_text_for_gpt = hot_df[show_cols].to_string(index=False)
+
+                    prompt = f"""
+你是一位美股主题投资和产业趋势分析师。
+
+下面是今日风口主题监控数据：
+
+{theme_text_for_gpt}
+
+请分析：
+1. 今天最值得关注的风口主题
+2. 哪些是短线噪音
+3. 哪些可能影响美股相关股票
+4. 哪些主题可能和 AI、半导体、军工、机器人、生物科技、加密货币有关
+5. 给出可能相关股票方向
+6. 给出风险提醒
+7. 最终列出今日 Top 3 风口
+
+中文输出，直接、专业。
+"""
+
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=[
+                            {"role": "system", "content": "你是专业美股主题投资分析师。"},
+                            {"role": "user", "content": prompt}
+                        ],
+                        temperature=0.6,
+                        max_tokens=1200
+                    )
+
+                    result = response.choices[0].message.content
+
+                    st.markdown(f"""
+                    <div class="ai-box">
+                    {result.replace(chr(10), "<br>")}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                except Exception as e:
+                    st.error(f"风口GPT分析失败: {e}")
+
+    else:
+        st.info("风口表格暂时没有数据。")
+
+except Exception as e:
+    st.warning("暂时无法读取风口预测 Google Sheet。请确认分享权限是“知道链接的人可查看”。")
+    st.caption(str(e))
 chart_df = df.tail(252)
 
 st.subheader("📉 近一年K线 + 成交量")
