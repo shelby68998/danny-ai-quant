@@ -504,7 +504,7 @@ with a2:
     """, unsafe_allow_html=True)
 from openai import OpenAI
 
-st.subheader("🤖 GPT 深度分析")
+st.subheader("🧠 GPT 深度分析")
 
 if st.button("🚀 使用 OpenAI API 深度分析"):
 
@@ -520,22 +520,22 @@ if st.button("🚀 使用 OpenAI API 深度分析"):
 
 当前数据：
 
-价格: {current_price}
-距历史高点跌幅: {drawdown:.1f}%
-RSI: {rsi:.1f}
-量比: {volume_ratio:.2f}
-市值: {fmt_b(market_cap)}
-PE: {fmt_num(trailing_pe)}
-Forward PE: {fmt_num(forward_pe)}
-P/S: {fmt_num(ps)}
-收入增速: {fmt_pct(revenue_growth)}
-毛利率: {fmt_pct(gross_margin)}
-净利率: {fmt_pct(profit_margin)}
-行业: {sector}
-细分行业: {industry}
-热点主题: {theme_text}
+价格：{current_price}
+距历史高点跌幅：{drawdown:.1f}%
+RSI：{rsi:.1f}
+量比：{volume_ratio:.2f}
+市值：{fmt_b(market_cap)}
+PE：{fmt_num(trailing_pe)}
+Forward PE：{fmt_num(forward_pe)}
+P/S：{fmt_num(ps)}
+收入增速：{fmt_pct(revenue_growth)}
+毛利率：{fmt_pct(gross_margin)}
+净利率：{fmt_pct(profit_margin)}
+行业：{sector}
+细分行业：{industry}
+热点主题：{theme_text}
 
-请从以下角度分析：
+请重点分析：
 
 1. 公司核心逻辑
 2. 当前估值是否危险
@@ -545,26 +545,17 @@ P/S: {fmt_num(ps)}
 6. 最大风险
 7. 未来1-3年空间
 8. 现在是否值得关注
-9. 给出结论评级：
-   - 强烈关注
-   - 可以观察
-   - 暂时回避
+9. 给出评级
 
-用中文回答。
-
-要求：
-- 专业
-- 直接
-- 像顶级基金经理
-- 不要废话
+输出用中文。
 """
 
             response = client.chat.completions.create(
-                model="gpt-4.1-mini",
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "system",
-                        "content": "你是顶级美股基金经理。"
+                        "content": "你是专业华尔街基金经理。"
                     },
                     {
                         "role": "user",
@@ -579,7 +570,7 @@ P/S: {fmt_num(ps)}
 
             st.markdown(f"""
             <div class="ai-box">
-            {ai_result.replace('\n', '<br>')}
+            {ai_result.replace(chr(10), "<br>")}
             </div>
             """, unsafe_allow_html=True)
 
