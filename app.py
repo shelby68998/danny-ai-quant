@@ -502,7 +502,89 @@ with a2:
         <ul>{''.join([f"<li>{x}</li>" for x in risk])}</ul>
     </div>
     """, unsafe_allow_html=True)
+from openai import OpenAI
 
+st.subheader("🤖 GPT 深度分析")
+
+if st.button("🚀 使用 OpenAI API 深度分析"):
+
+    with st.spinner("GPT 正在分析中..."):
+
+        try:
+            client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
+            prompt = f"""
+你是一位顶级美股基金经理。
+
+请深度分析股票 {ticker}。
+
+当前数据：
+
+价格: {current_price}
+距历史高点跌幅: {drawdown:.1f}%
+RSI: {rsi:.1f}
+量比: {volume_ratio:.2f}
+市值: {fmt_b(market_cap)}
+PE: {fmt_num(trailing_pe)}
+Forward PE: {fmt_num(forward_pe)}
+P/S: {fmt_num(ps)}
+收入增速: {fmt_pct(revenue_growth)}
+毛利率: {fmt_pct(gross_margin)}
+净利率: {fmt_pct(profit_margin)}
+行业: {sector}
+细分行业: {industry}
+热点主题: {theme_text}
+
+请从以下角度分析：
+
+1. 公司核心逻辑
+2. 当前估值是否危险
+3. 技术面强弱
+4. 机构资金可能态度
+5. 是否符合成长股
+6. 最大风险
+7. 未来1-3年空间
+8. 现在是否值得关注
+9. 给出结论评级：
+   - 强烈关注
+   - 可以观察
+   - 暂时回避
+
+用中文回答。
+
+要求：
+- 专业
+- 直接
+- 像顶级基金经理
+- 不要废话
+"""
+
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "你是顶级美股基金经理。"
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.7,
+                max_tokens=1200
+            )
+
+            ai_result = response.choices[0].message.content
+
+            st.markdown(f"""
+            <div class="ai-box">
+            {ai_result.replace('\n', '<br>')}
+            </div>
+            """, unsafe_allow_html=True)
+
+        except Exception as e:
+            st.error(f"GPT分析失败: {e}")
 chart_df = df.tail(252)
 
 st.subheader("📉 近一年K线 + 成交量")
