@@ -788,7 +788,7 @@ SIGNALS_GID = "1861710963"
 @st.cache_data(ttl=900, show_spinner=False)
 def load_theme_signals():
     url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={SIGNALS_GID}"
-    df_theme = pd.read_csv(url)
+    df_theme = pd.read_csv(url, skiprows=10)
     return df_theme
 
 try:
