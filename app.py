@@ -783,7 +783,7 @@ try:
     else:
         st.info("风口表格暂时没有数据。")
 except Exception as e:
-    st.warning("暂时无法读取风口预测 Google Sheet。请确认分享权限是"知道链接的人可查看"。")
+    st.warning('暂时无法读取风口预测 Google Sheet。请确认分享权限是“知道链接的人可查看”。')
     st.caption(str(e))
 
 # ── K线图 + 成交量 ────────────────────────────────────────────────────────────
