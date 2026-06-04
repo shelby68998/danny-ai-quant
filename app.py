@@ -410,7 +410,7 @@ def get_stock_data_safe(symbol):
     if isinstance(hist_raw, list) and len(hist_raw) > 0:
         df = normalize_ohlcv(pd.DataFrame(hist_raw))
         if not df.empty:
-            note = "；".join(fmp_errors) if fmp_errors else limited_note
+            note = "；".join(fmp_errors)
             return info, df, note or None
 
     try:
@@ -419,19 +419,17 @@ def get_stock_data_safe(symbol):
 
         if not df.empty:
             note_parts = []
-            if limited_note:
-                note_parts.append(limited_note)
-            elif not fmp_errors:
+            if not fmp_errors and not limited_note:
                 note_parts.append("FMP历史K线未返回可用数据，已使用Yahoo备用。")
             note_parts.extend(fmp_errors)
             note = "；".join(note_parts)
-            return info, df, note
+            return info, df, note or None
 
     except Exception as e:
         note = "；".join(fmp_errors) if fmp_errors else limited_note or "FMP无具体错误。"
         return info, pd.DataFrame(), f"行情数据失败：{note}；Yahoo也失败：{e}"
 
-    note = "；".join(fmp_errors) if fmp_errors else limited_note or "FMP和Yahoo都没有返回可用数据。"
+    note = "；".join(fmp_errors) if fmp_errors else "FMP和Yahoo都没有返回可用数据。"
     return info, pd.DataFrame(), note
 
 
