@@ -178,7 +178,7 @@ def get_stock_data_safe(symbol):
         profile = fmp_get(f"profile/{symbol}")
         ratios = fmp_get(f"ratios-ttm/{symbol}")
         growth = fmp_get(f"financial-growth/{symbol}", {"limit": 1})
-        hist = fmp_get(f"historical-price-full/{symbol}", {"timeseries": 800})
+        hist = None
 
         for name, data in {
             "quote": quote,
@@ -280,8 +280,7 @@ with m3: card("VIX", f"{vix_price:.2f}" if vix_price else "N/A")
 info, df, error_msg = get_stock_data_safe(ticker)
 
 if error_msg:
-    st.warning("数据源提示：系统已尝试 FMP 和 Yahoo。下面是具体原因。")
-    st.caption(error_msg)
+    st.info(error_msg)
 
 if df.empty:
     st.error("没有下载到股票数据。请稍后重试，或检查股票代码是否正确。")
