@@ -425,7 +425,7 @@ with m3: card("VIX", f"{vix_price:.2f}" if vix_price else "N/A")
 
 info, df, error_msg = get_stock_data_safe(ticker)
 
-if error_msg:
+if error_msg and "FMP当前套餐限制" not in error_msg:
     st.info(error_msg)
 
 if df.empty:
