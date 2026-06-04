@@ -2,6 +2,7 @@ import time
 import os
 import html
 import math
+import json
 import requests
 import streamlit as st
 import yfinance as yf
@@ -115,14 +116,57 @@ def parse_recent_tickers(value):
     return tickers[:10]
 
 
+def parse_watchlist(value):
+    try:
+        raw = json.loads(value or "{}")
+    except Exception:
+        raw = {}
+
+    if not isinstance(raw, dict):
+        return {}
+
+    watchlist = {}
+    for raw_symbol, raw_item in raw.items():
+        symbol = clean_ticker(raw_symbol)
+        if not symbol or not isinstance(raw_item, dict):
+            continue
+
+        try:
+            added_price = float(raw_item.get("added_price", 0))
+        except (TypeError, ValueError):
+            added_price = 0.0
+
+        try:
+            danny_value = int(raw_item.get("danny_score", 0))
+        except (TypeError, ValueError):
+            danny_value = 0
+
+        status = str(raw_item.get("status", "重点观察"))
+        if status not in ("重点观察", "等待更低买点"):
+            status = "重点观察"
+
+        watchlist[symbol] = {
+            "status": status,
+            "added_price": added_price,
+            "danny_score": max(0, min(6, danny_value)),
+            "note": str(raw_item.get("note", ""))[:120],
+        }
+
+    return watchlist
+
+
 query_ticker = clean_ticker(st.query_params.get("ticker", ""))
 query_recent = parse_recent_tickers(st.query_params.get("recent", ""))
+query_watchlist = parse_watchlist(st.query_params.get("watch", ""))
 
 if "recent_tickers" not in st.session_state:
     st.session_state.recent_tickers = query_recent or DEFAULT_TICKERS
 
 if "ticker" not in st.session_state:
     st.session_state.ticker = query_ticker or st.session_state.recent_tickers[0]
+
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = query_watchlist
 
 left, right = st.columns([4, 2])
 
@@ -158,6 +202,18 @@ st.session_state.ticker = ticker
 st.query_params["ticker"] = ticker
 st.query_params["recent"] = ",".join(st.session_state.recent_tickers)
 
+
+def save_watchlist():
+    if st.session_state.watchlist:
+        st.query_params["watch"] = json.dumps(
+            st.session_state.watchlist,
+            ensure_ascii=False,
+            separators=(",", ":")
+        )
+    else:
+        st.query_params["watch"] = ""
+
+
 def card(title, value):
     st.markdown(f"""
     <div class="metric-card">
@@ -174,6 +230,12 @@ def fmt_pct(v):
 
 def fmt_num(v):
     return "N/A" if v is None else f"{v:.1f}"
+
+
+def fmt_change_pct(value):
+    if value is None:
+        return "N/A"
+    return f"{value:+.1f}%"
 
 
 def get_secret(name):
@@ -745,6 +807,68 @@ if ps is not None and ps > 30:
     long_term = "估值偏贵，长线需谨慎"
 elif growth_ok and profitable_ok:
     long_term = "基本面较强，可长期跟踪"
+
+st.subheader("⭐ Danny观察名单")
+existing_watch = st.session_state.watchlist.get(ticker, {})
+watch_note = st.text_input(
+    "备注",
+    value=existing_watch.get("note", ""),
+    key=f"watch_note_{ticker}",
+    placeholder="例如：财报后再看、等回踩MA50、AI网络设备主线"
+)
+
+w1, w2, w3 = st.columns(3)
+with w1:
+    if st.button("加入重点观察"):
+        st.session_state.watchlist[ticker] = {
+            "status": "重点观察",
+            "added_price": current_price,
+            "danny_score": danny_score,
+            "note": watch_note.strip(),
+        }
+        save_watchlist()
+        st.rerun()
+
+with w2:
+    if st.button("等待更低买点"):
+        st.session_state.watchlist[ticker] = {
+            "status": "等待更低买点",
+            "added_price": current_price,
+            "danny_score": danny_score,
+            "note": watch_note.strip(),
+        }
+        save_watchlist()
+        st.rerun()
+
+with w3:
+    if st.button("移出观察"):
+        if ticker in st.session_state.watchlist:
+            del st.session_state.watchlist[ticker]
+            save_watchlist()
+        st.rerun()
+
+if st.session_state.watchlist:
+    watch_rows = []
+    for symbol, item in st.session_state.watchlist.items():
+        watched_price = current_price if symbol == ticker else get_price_safe(symbol)
+        added_price = safe_number(item.get("added_price"))
+        change_pct = None
+        if watched_price is not None and added_price:
+            change_pct = (watched_price - added_price) / added_price * 100
+
+        watch_rows.append({
+            "股票": symbol,
+            "状态": item.get("status", "重点观察"),
+            "加入价格": f"${added_price:.2f}" if added_price else "N/A",
+            "当前价格": f"${watched_price:.2f}" if watched_price else "N/A",
+            "距加入涨跌": fmt_change_pct(change_pct),
+            "Danny分数": f"{item.get('danny_score', 0)}/6",
+            "备注": item.get("note", ""),
+        })
+
+    st.dataframe(pd.DataFrame(watch_rows), use_container_width=True, hide_index=True)
+else:
+    st.caption("还没有加入观察名单。")
 
 st.subheader("🧠 Danny策略判断")
 d1, d2, d3 = st.columns([1, 1, 1.2])
