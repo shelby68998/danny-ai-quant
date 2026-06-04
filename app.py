@@ -139,8 +139,13 @@ with right:
                 st.query_params["ticker"] = t
                 st.query_params["recent"] = ",".join(st.session_state.recent_tickers)
                 st.rerun()
+    if st.button("刷新数据"):
+        st.cache_data.clear()
+        st.rerun()
 
 ticker = clean_ticker(ticker_input or st.session_state.ticker)
+if not ticker:
+    ticker = DEFAULT_TICKERS[0]
 
 if ticker not in st.session_state.recent_tickers:
     st.session_state.recent_tickers = [ticker] + st.session_state.recent_tickers
@@ -178,14 +183,24 @@ def get_secret(name):
         return os.getenv(name)
 
 
+def get_secret_bool(name, default=False):
+    value = get_secret(name)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 FMP_KEY = get_secret("FMP_API_KEY")
+USE_FMP = bool(FMP_KEY) and get_secret_bool("USE_FMP", True)
 
 FMP_STABLE_BASE = "https://financialmodelingprep.com/stable"
 
 
 def fmp_stable_get(endpoint, params=None):
-    if not FMP_KEY:
-        return {"_error": "缺少 FMP_API_KEY，已跳过 FMP 并使用 Yahoo 备用数据。"}
+    if not USE_FMP:
+        return {"_error": "FMP未启用。"}
 
     try:
         p = dict(params or {})
@@ -272,6 +287,35 @@ def normalize_ohlcv(df):
     return df.sort_index()
 
 
+def normalize_close_volume(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df = df.rename(columns={"date": "date", "price": "Close", "close": "Close", "volume": "Volume"})
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"]).sort_values("date").set_index("date")
+
+    if "Close" not in df.columns:
+        return pd.DataFrame()
+
+    df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    if "Volume" not in df.columns:
+        df["Volume"] = 0
+    df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0)
+
+    df = df.dropna(subset=["Close"])
+    for col in ["Open", "High", "Low"]:
+        df[col] = df["Close"]
+
+    df.index = pd.to_datetime(df.index)
+    return df[["Open", "High", "Low", "Close", "Volume"]].sort_index()
+
+
 def yf_info_safe(symbol):
     try:
         info = yf.Ticker(symbol).info
@@ -337,99 +381,90 @@ def get_openai_client():
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_price_safe(symbol):
-    fmp_symbol = fmp_symbol_for(symbol)
-
-    data = fmp_stable_get("quote-short", {"symbol": fmp_symbol})
-
-    if data and isinstance(data, list) and len(data) > 0:
-        price = to_float(data[0].get("price"))
-        if price is not None:
-            return price
-
     try:
         data = yf.download(symbol, period="5d", auto_adjust=False, progress=False)
         data = normalize_ohlcv(data)
 
         if data.empty:
-            return None
+            raise ValueError("Yahoo price data is empty")
 
         return safe_number(data["Close"].dropna().iloc[-1])
 
     except Exception:
+        if USE_FMP:
+            data = fmp_stable_get("quote-short", {"symbol": fmp_symbol_for(symbol)})
+
+            if data and isinstance(data, list) and len(data) > 0:
+                price = to_float(data[0].get("price"))
+                if price is not None:
+                    return price
+
         return None
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_stock_data_safe(symbol):
     fmp_errors = []
-    fmp_limited_fields = []
     fmp_symbol = fmp_symbol_for(symbol)
+    yf_info = yf_info_safe(symbol)
+    fmp_info = {}
+    fmp_df = pd.DataFrame()
 
-    quote_raw = fmp_stable_get("quote", {"symbol": fmp_symbol})
-    profile_raw = fmp_stable_get("profile", {"symbol": fmp_symbol})
-    ratios_raw = fmp_stable_get("ratios-ttm", {"symbol": fmp_symbol})
-    growth_raw = fmp_stable_get("income-statement-growth", {"symbol": fmp_symbol, "limit": 1})
-    hist_raw = fmp_stable_get("historical-price-eod/full", {"symbol": fmp_symbol})
+    if USE_FMP:
+        quote_raw = fmp_stable_get("quote", {"symbol": fmp_symbol})
+        profile_raw = fmp_stable_get("profile", {"symbol": fmp_symbol})
+        hist_raw = fmp_stable_get("historical-price-eod/light", {"symbol": fmp_symbol})
 
-    for name, data in {
-        "quote": quote_raw,
-        "profile": profile_raw,
-        "ratios": ratios_raw,
-        "growth": growth_raw,
-        "history": hist_raw
-    }.items():
-        if isinstance(data, dict) and "_error" in data:
-            if fmp_limited(data):
-                fmp_limited_fields.append(name)
-            else:
-                fmp_errors.append(f"{name}: {data['_error']}")
+        for name, data in {
+            "quote": quote_raw,
+            "profile": profile_raw,
+            "history": hist_raw
+        }.items():
+            if isinstance(data, dict) and "_error" in data:
+                if not fmp_limited(data):
+                    fmp_errors.append(f"{name}: {data['_error']}")
 
-    quote = first_dict(quote_raw)
-    profile = first_dict(profile_raw)
-    ratios = first_dict(ratios_raw)
-    growth = first_dict(growth_raw)
+        quote = first_dict(quote_raw)
+        profile = first_dict(profile_raw)
 
-    fmp_info = {
-        "marketCap": to_float(profile.get("marketCap") or profile.get("mktCap") or quote.get("marketCap")),
-        "beta": to_float(profile.get("beta") or quote.get("beta")),
-        "trailingPE": to_float(quote.get("pe") or quote.get("priceEarningsRatio") or ratios.get("priceEarningsRatioTTM")),
-        "forwardPE": to_float(ratios.get("peRatioTTM")),
-        "priceToSalesTrailing12Months": to_float(ratios.get("priceToSalesRatioTTM")),
-        "profitMargins": to_float(ratios.get("netProfitMarginTTM")),
-        "revenueGrowth": to_float(growth.get("growthRevenue") or growth.get("revenueGrowth")),
-        "grossMargins": to_float(ratios.get("grossProfitMarginTTM")),
-        "sector": profile.get("sector", "N/A"),
-        "industry": profile.get("industry", "N/A"),
-        "longBusinessSummary": profile.get("description", "")
-    }
-    info = merge_fundamentals(fmp_info, yf_info_safe(symbol))
-    limited_note = ""
-    if fmp_limited_fields:
-        limited_note = "FMP当前套餐限制了部分数据，已自动改用Yahoo备用数据。"
+        fmp_info = {
+            "marketCap": to_float(profile.get("marketCap") or profile.get("mktCap") or quote.get("marketCap")),
+            "beta": to_float(profile.get("beta") or quote.get("beta")),
+            "trailingPE": to_float(quote.get("pe") or quote.get("priceEarningsRatio")),
+            "forwardPE": None,
+            "priceToSalesTrailing12Months": None,
+            "profitMargins": None,
+            "revenueGrowth": None,
+            "grossMargins": None,
+            "sector": profile.get("sector", "N/A"),
+            "industry": profile.get("industry", "N/A"),
+            "longBusinessSummary": profile.get("description", "")
+        }
 
-    if isinstance(hist_raw, list) and len(hist_raw) > 0:
-        df = normalize_ohlcv(pd.DataFrame(hist_raw))
-        if not df.empty:
-            note = "；".join(fmp_errors)
-            return info, df, note or None
+        if isinstance(hist_raw, list) and len(hist_raw) > 0:
+            fmp_df = normalize_close_volume(pd.DataFrame(hist_raw))
+
+    info = merge_fundamentals(fmp_info, yf_info)
 
     try:
         df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
         df = normalize_ohlcv(df)
 
         if not df.empty:
-            note_parts = []
-            if not fmp_errors and not limited_note:
-                note_parts.append("FMP历史K线未返回可用数据，已使用Yahoo备用。")
-            note_parts.extend(fmp_errors)
-            note = "；".join(note_parts)
+            note = "；".join(fmp_errors)
             return info, df, note or None
 
     except Exception as e:
-        note = "；".join(fmp_errors) if fmp_errors else limited_note or "FMP无具体错误。"
-        return info, pd.DataFrame(), f"行情数据失败：{note}；Yahoo也失败：{e}"
+        if not fmp_df.empty:
+            return info, fmp_df, None
+        note = "；".join(fmp_errors) if fmp_errors else "FMP未启用或没有可用备用数据。"
+        return info, pd.DataFrame(), f"行情数据失败：Yahoo失败：{e}；{note}"
 
-    note = "；".join(fmp_errors) if fmp_errors else "FMP和Yahoo都没有返回可用数据。"
+    if not fmp_df.empty:
+        note = "；".join(fmp_errors)
+        return info, fmp_df, note or None
+
+    note = "；".join(fmp_errors) if fmp_errors else "Yahoo没有返回可用行情数据。"
     return info, pd.DataFrame(), note
 
 
