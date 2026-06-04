@@ -99,11 +99,30 @@ h2, h3 {font-size: 20px !important; margin-top: 0.45rem !important; margin-botto
 
 st.title("📈 Danny AI Quant Terminal")
 
+DEFAULT_TICKERS = ["PLTR", "NVDA", "TSLA", "AMD", "RKLB", "AAPL", "MSFT", "META", "CRSP", "QQQ"]
+
+
+def clean_ticker(value):
+    return "".join(ch for ch in str(value).upper().strip() if ch.isalnum() or ch in ".-^")
+
+
+def parse_recent_tickers(value):
+    tickers = []
+    for item in str(value or "").split(","):
+        ticker_value = clean_ticker(item)
+        if ticker_value and ticker_value not in tickers:
+            tickers.append(ticker_value)
+    return tickers[:10]
+
+
+query_ticker = clean_ticker(st.query_params.get("ticker", ""))
+query_recent = parse_recent_tickers(st.query_params.get("recent", ""))
+
 if "recent_tickers" not in st.session_state:
-    st.session_state.recent_tickers = ["PLTR","NVDA","TSLA","AMD","RKLB","AAPL","MSFT","META","CRSP","QQQ"]
+    st.session_state.recent_tickers = query_recent or DEFAULT_TICKERS
 
 if "ticker" not in st.session_state:
-    st.session_state.ticker = "PLTR"
+    st.session_state.ticker = query_ticker or st.session_state.recent_tickers[0]
 
 left, right = st.columns([4, 2])
 
@@ -117,9 +136,11 @@ with right:
         with cols[i % 5]:
             if st.button(t, key=f"btn_{t}"):
                 st.session_state.ticker = t
+                st.query_params["ticker"] = t
+                st.query_params["recent"] = ",".join(st.session_state.recent_tickers)
                 st.rerun()
 
-ticker = ticker_input or st.session_state.ticker
+ticker = clean_ticker(ticker_input or st.session_state.ticker)
 
 if ticker not in st.session_state.recent_tickers:
     st.session_state.recent_tickers = [ticker] + st.session_state.recent_tickers
@@ -129,6 +150,8 @@ else:
 
 st.session_state.recent_tickers = st.session_state.recent_tickers[:10]
 st.session_state.ticker = ticker
+st.query_params["ticker"] = ticker
+st.query_params["recent"] = ",".join(st.session_state.recent_tickers)
 
 def card(title, value):
     st.markdown(f"""
@@ -425,7 +448,7 @@ with m3: card("VIX", f"{vix_price:.2f}" if vix_price else "N/A")
 
 info, df, error_msg = get_stock_data_safe(ticker)
 
-if error_msg and "FMP当前套餐限制" not in error_msg:
+if error_msg:
     st.info(error_msg)
 
 if df.empty:
