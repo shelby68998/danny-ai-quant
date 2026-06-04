@@ -249,6 +249,51 @@ def normalize_ohlcv(df):
     return df.sort_index()
 
 
+def yf_info_safe(symbol):
+    try:
+        info = yf.Ticker(symbol).info
+        return info if isinstance(info, dict) else {}
+    except Exception:
+        return {}
+
+
+def first_value(*values, default=None):
+    for value in values:
+        if value not in (None, "", "N/A"):
+            return value
+    return default
+
+
+def merge_fundamentals(fmp_info, yf_info):
+    return {
+        "marketCap": to_float(first_value(fmp_info.get("marketCap"), yf_info.get("marketCap"))),
+        "beta": to_float(first_value(fmp_info.get("beta"), yf_info.get("beta"))),
+        "trailingPE": to_float(first_value(fmp_info.get("trailingPE"), yf_info.get("trailingPE"))),
+        "forwardPE": to_float(first_value(fmp_info.get("forwardPE"), yf_info.get("forwardPE"))),
+        "priceToSalesTrailing12Months": to_float(first_value(
+            fmp_info.get("priceToSalesTrailing12Months"),
+            yf_info.get("priceToSalesTrailing12Months")
+        )),
+        "profitMargins": to_float(first_value(fmp_info.get("profitMargins"), yf_info.get("profitMargins"))),
+        "revenueGrowth": to_float(first_value(fmp_info.get("revenueGrowth"), yf_info.get("revenueGrowth"))),
+        "grossMargins": to_float(first_value(fmp_info.get("grossMargins"), yf_info.get("grossMargins"))),
+        "sector": first_value(fmp_info.get("sector"), yf_info.get("sector"), default="N/A"),
+        "industry": first_value(fmp_info.get("industry"), yf_info.get("industry"), default="N/A"),
+        "longBusinessSummary": first_value(
+            fmp_info.get("longBusinessSummary"),
+            yf_info.get("longBusinessSummary"),
+            default=""
+        ),
+    }
+
+
+def fmp_limited(data):
+    if not (isinstance(data, dict) and "_error" in data):
+        return False
+    error = str(data.get("_error", "")).lower()
+    return "402" in error or "premium" in error or "subscription" in error
+
+
 def render_text_box(text):
     if not text:
         return
@@ -294,6 +339,7 @@ def get_price_safe(symbol):
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_stock_data_safe(symbol):
     fmp_errors = []
+    fmp_limited_fields = []
     fmp_symbol = fmp_symbol_for(symbol)
 
     quote_raw = fmp_stable_get("quote", {"symbol": fmp_symbol})
@@ -310,14 +356,17 @@ def get_stock_data_safe(symbol):
         "history": hist_raw
     }.items():
         if isinstance(data, dict) and "_error" in data:
-            fmp_errors.append(f"{name}: {data['_error']}")
+            if fmp_limited(data):
+                fmp_limited_fields.append(name)
+            else:
+                fmp_errors.append(f"{name}: {data['_error']}")
 
     quote = first_dict(quote_raw)
     profile = first_dict(profile_raw)
     ratios = first_dict(ratios_raw)
     growth = first_dict(growth_raw)
 
-    info = {
+    fmp_info = {
         "marketCap": to_float(profile.get("marketCap") or profile.get("mktCap") or quote.get("marketCap")),
         "beta": to_float(profile.get("beta") or quote.get("beta")),
         "trailingPE": to_float(quote.get("pe") or quote.get("priceEarningsRatio") or ratios.get("priceEarningsRatioTTM")),
@@ -330,26 +379,37 @@ def get_stock_data_safe(symbol):
         "industry": profile.get("industry", "N/A"),
         "longBusinessSummary": profile.get("description", "")
     }
+    info = merge_fundamentals(fmp_info, yf_info_safe(symbol))
+    limited_note = ""
+    if fmp_limited_fields:
+        limited_note = "FMP当前套餐限制了部分数据，已自动改用Yahoo备用数据。"
 
     if isinstance(hist_raw, list) and len(hist_raw) > 0:
         df = normalize_ohlcv(pd.DataFrame(hist_raw))
         if not df.empty:
-            return info, df, None
+            note = "；".join(fmp_errors) if fmp_errors else limited_note
+            return info, df, note or None
 
     try:
         df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
         df = normalize_ohlcv(df)
 
         if not df.empty:
-            note = "；".join(fmp_errors) if fmp_errors else "FMP历史K线未返回可用数据，已使用Yahoo备用。"
+            note_parts = []
+            if limited_note:
+                note_parts.append(limited_note)
+            elif not fmp_errors:
+                note_parts.append("FMP历史K线未返回可用数据，已使用Yahoo备用。")
+            note_parts.extend(fmp_errors)
+            note = "；".join(note_parts)
             return info, df, note
 
     except Exception as e:
-        note = "；".join(fmp_errors) if fmp_errors else "FMP无具体错误。"
-        return {}, pd.DataFrame(), f"FMP失败：{note}；Yahoo也失败：{e}"
+        note = "；".join(fmp_errors) if fmp_errors else limited_note or "FMP无具体错误。"
+        return info, pd.DataFrame(), f"行情数据失败：{note}；Yahoo也失败：{e}"
 
-    note = "；".join(fmp_errors) if fmp_errors else "FMP和Yahoo都没有返回可用数据。"
-    return {}, pd.DataFrame(), note
+    note = "；".join(fmp_errors) if fmp_errors else limited_note or "FMP和Yahoo都没有返回可用数据。"
+    return info, pd.DataFrame(), note
 
 
 
