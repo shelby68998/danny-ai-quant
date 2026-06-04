@@ -140,6 +140,14 @@ def parse_watchlist(value):
             danny_value = int(raw_item.get("danny_score", 0))
         except (TypeError, ValueError):
             danny_value = 0
+        try:
+            reversal_value = int(raw_item.get("reversal_score", 0))
+        except (TypeError, ValueError):
+            reversal_value = 0
+        try:
+            breakout_value = int(raw_item.get("breakout_score", 0))
+        except (TypeError, ValueError):
+            breakout_value = 0
 
         status = str(raw_item.get("status", "重点观察"))
         if status not in ("重点观察", "等待更低买点"):
@@ -149,6 +157,8 @@ def parse_watchlist(value):
             "status": status,
             "added_price": added_price,
             "danny_score": max(0, min(6, danny_value)),
+            "reversal_score": max(0, min(8, reversal_value)),
+            "breakout_score": max(0, min(8, breakout_value)),
             "note": str(raw_item.get("note", ""))[:120],
         }
 
@@ -687,12 +697,23 @@ profitable_ok = profit_margin is not None and profit_margin > 0
 not_overheated = rsi < 70
 has_theme = len(themes) > 0
 volume_ok = volume_ratio >= 0.7
+near_low_rebound_ok = low_52 > 0 and current_price >= low_52 * 1.2
+above_ma50_ok = current_price > ma50
+above_ma200_ok = current_price > ma200
+not_far_from_high_ok = high_52 > 0 and current_price >= high_52 * 0.75
+positive_growth_ok = revenue_growth is not None and revenue_growth > 0
+quality_ok = any([
+    positive_growth_ok,
+    profit_margin is not None and profit_margin > 0,
+    gross_margin is not None and gross_margin > 0.35,
+])
+not_extreme_valuation_ok = ps is None or ps <= 30
 
 danny_checks = [
-    ("跌幅达到60%安全区", deep_drop_ok),
+    ("距历史高点跌幅超过60%", deep_drop_ok),
     ("收入增速超过30%", growth_ok),
     ("公司已经盈利", profitable_ok),
-    ("RSI没有过热", not_overheated),
+    ("RSI未过热", not_overheated),
     ("具备热点/核心赛道", has_theme),
     ("成交量没有明显萎缩", volume_ok),
 ]
@@ -708,6 +729,50 @@ elif danny_score >= 4:
 else:
     danny_view = "暂不符合抄底模型"
     danny_class = "bad"
+
+reversal_checks = [
+    ("距历史高点跌幅超过40%", drawdown <= -40),
+    ("股价重新站上MA50", above_ma50_ok),
+    ("MA20接近或高于MA50", ma20 >= ma50 * 0.98),
+    ("RSI处于40-65", 40 <= rsi <= 65),
+    ("成交量高于近30日均量", volume_ratio >= 1.0),
+    ("较52周低点反弹至少20%", near_low_rebound_ok),
+    ("具备行业/主题催化剂", has_theme),
+    ("基本面至少一项未恶化", quality_ok),
+]
+reversal_score = sum(1 for _, ok in reversal_checks if ok)
+
+if reversal_score >= 6:
+    reversal_view = "反转证据较强"
+    reversal_class = "good"
+elif reversal_score >= 4:
+    reversal_view = "反转观察中"
+    reversal_class = "mid"
+else:
+    reversal_view = "反转证据不足"
+    reversal_class = "bad"
+
+breakout_checks = [
+    ("股价高于MA50和MA200", above_ma50_ok and above_ma200_ok),
+    ("MA50高于MA200", ma50 > ma200),
+    ("距离52周高点不超过25%", not_far_from_high_ok),
+    ("成交量放大", volume_ratio >= 1.2),
+    ("收入增长为正", positive_growth_ok),
+    ("利润率/毛利率有质量", quality_ok),
+    ("属于强主题赛道", has_theme),
+    ("估值未极端泡沫", not_extreme_valuation_ok),
+]
+breakout_score = sum(1 for _, ok in breakout_checks if ok)
+
+if breakout_score >= 6:
+    breakout_view = "趋势突破较强"
+    breakout_class = "good"
+elif breakout_score >= 4:
+    breakout_view = "趋势可观察"
+    breakout_class = "mid"
+else:
+    breakout_view = "趋势条件不足"
+    breakout_class = "bad"
 
 # AI评分
 score = 50
@@ -842,6 +907,8 @@ with w1:
             "status": "重点观察",
             "added_price": current_price,
             "danny_score": danny_score,
+            "reversal_score": reversal_score,
+            "breakout_score": breakout_score,
             "note": watch_note.strip(),
         }
         save_watchlist()
@@ -853,6 +920,8 @@ with w2:
             "status": "等待更低买点",
             "added_price": current_price,
             "danny_score": danny_score,
+            "reversal_score": reversal_score,
+            "breakout_score": breakout_score,
             "note": watch_note.strip(),
         }
         save_watchlist()
@@ -880,7 +949,7 @@ if st.session_state.watchlist:
             "加入价格": f"${added_price:.2f}" if added_price else "N/A",
             "当前价格": f"${watched_price:.2f}" if watched_price else "N/A",
             "距加入涨跌": fmt_change_pct(change_pct),
-            "Danny分数": f"{item.get('danny_score', 0)}/6",
+            "模型分数": f"深跌{item.get('danny_score', 0)}/6 反转{item.get('reversal_score', 0)}/8 突破{item.get('breakout_score', 0)}/8",
             "备注": item.get("note", ""),
         })
 
@@ -889,38 +958,50 @@ else:
     st.caption("还没有加入观察名单。")
 
 st.subheader("🧠 Danny策略判断")
-d1, d2, d3 = st.columns([1, 1, 1.2])
+d1, d2, d3 = st.columns(3)
+
+def checks_html(checks):
+    return "".join([f"<li>{'✅' if ok else '❌'} {name}</li>" for name, ok in checks])
 
 with d1:
     st.markdown(f"""
     <div class="ai-box">
-        <div style="font-size:18px;">Danny模型：<span class="{danny_class}">{danny_view}</span></div>
-        <div style="font-size:28px; font-weight:800; margin-top:6px;">{danny_score}/6</div>
-        <div><b>估值状态：</b><span class="{valuation_class}">{valuation_risk}</span></div>
-        <div><b>资金关注：</b>{money_attention}</div>
+        <div style="font-size:16px;"><b>深跌抄底：</b><span class="{danny_class}">{danny_view}</span></div>
+        <div style="font-size:26px; font-weight:800; margin-top:5px;">{danny_score}/6</div>
+        <ul>{checks_html(danny_checks)}</ul>
     </div>
     """, unsafe_allow_html=True)
 
 with d2:
     st.markdown(f"""
     <div class="ai-box">
-        <b>操作建议</b>
-        <ul>
-            <li>短线：{short_term}</li>
-            <li>中线：{mid_term}</li>
-            <li>长线：{long_term}</li>
-        </ul>
+        <div style="font-size:16px;"><b>反转确认：</b><span class="{reversal_class}">{reversal_view}</span></div>
+        <div style="font-size:26px; font-weight:800; margin-top:5px;">{reversal_score}/8</div>
+        <ul>{checks_html(reversal_checks)}</ul>
     </div>
     """, unsafe_allow_html=True)
 
 with d3:
-    checks_html = "".join([f"<li>{'✅' if ok else '❌'} {name}</li>" for name, ok in danny_checks])
     st.markdown(f"""
     <div class="ai-box">
-        <b>Danny深跌模型条件</b>
-        <ul>{checks_html}</ul>
+        <div style="font-size:16px;"><b>成长突破：</b><span class="{breakout_class}">{breakout_view}</span></div>
+        <div style="font-size:26px; font-weight:800; margin-top:5px;">{breakout_score}/8</div>
+        <ul>{checks_html(breakout_checks)}</ul>
     </div>
     """, unsafe_allow_html=True)
+
+st.markdown(f"""
+<div class="ai-box">
+    <b>操作建议</b>
+    <ul>
+        <li>短线：{short_term}</li>
+        <li>中线：{mid_term}</li>
+        <li>长线：{long_term}</li>
+        <li>估值状态：<span class="{valuation_class}">{valuation_risk}</span></li>
+        <li>资金关注：{money_attention}</li>
+    </ul>
+</div>
+""", unsafe_allow_html=True)
 
 st.subheader("🤖 AI量化判断")
 a1, a2 = st.columns([1.1, 2.2])
@@ -1082,7 +1163,10 @@ P/S：{fmt_num(ps)}
 细分行业：{industry}
 热点主题：{theme_text}
 估值状态：{valuation_risk}
-Danny模型：{danny_view}
+Danny模型：
+- 深跌抄底：{danny_view}（{danny_score}/6）
+- 反转确认：{reversal_view}（{reversal_score}/8）
+- 成长突破：{breakout_view}（{breakout_score}/8）
 
 请分析：
 1. 公司核心逻辑
@@ -1131,7 +1215,10 @@ RSI：{rsi:.1f}
 压力位：{resistance:.2f}
 量比：{volume_ratio:.2f}
 估值状态：{valuation_risk}
-Danny模型：{danny_view}
+Danny模型：
+- 深跌抄底：{danny_view}（{danny_score}/6）
+- 反转确认：{reversal_view}（{reversal_score}/8）
+- 成长突破：{breakout_view}（{breakout_score}/8）
 
 请输出：
 1. 激进买点
@@ -1257,7 +1344,10 @@ if st.button("🧠 GPT新闻情绪分析"):
 RSI：{rsi:.1f}
 量比：{volume_ratio:.2f}
 估值状态：{valuation_risk}
-Danny模型：{danny_view}
+Danny模型：
+- 深跌抄底：{danny_view}（{danny_score}/6）
+- 反转确认：{reversal_view}（{reversal_score}/8）
+- 成长突破：{breakout_view}（{breakout_score}/8）
 行业：{sector}
 主题：{theme_text}
 
