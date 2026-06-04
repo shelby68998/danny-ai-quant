@@ -593,18 +593,36 @@ sector = info.get("sector", "N/A")
 industry = info.get("industry", "N/A")
 summary = info.get("longBusinessSummary", "")
 
-theme_words = {
-    "AI": ["artificial intelligence", "ai", "machine learning", "data analytics", "cloud"],
-    "机器人": ["robot", "robotics", "automation"],
-    "军工/国防": ["defense", "military", "government"],
-    "半导体": ["semiconductor", "chip", "gpu", "processor"],
-    "太空": ["space", "rocket", "satellite", "launch"],
-    "生物科技": ["biotech", "clinical", "drug", "therapy", "pharmaceutical"],
-    "新能源": ["energy", "solar", "battery", "electric vehicle"]
-}
-
 text_blob = f"{sector} {industry} {summary}".lower()
-themes = [name for name, words in theme_words.items() if any(w in text_blob for w in words)]
+
+theme_rules = [
+    ("光通信/数据中心网络", [
+        "optical", "photonics", "fiber", "coherent", "wavelength", "routing",
+        "switching", "networking", "network infrastructure", "bandwidth",
+        "communication equipment", "communications equipment", "telecom"
+    ]),
+    ("半导体", ["semiconductor", "chip", "gpu", "processor", "foundry", "wafer"]),
+    ("AI基础设施", [
+        "data center", "datacenter", "ai infrastructure", "accelerated computing",
+        "cloud infrastructure", "hyperscale", "high-speed networking"
+    ]),
+    ("AI软件/数据", ["artificial intelligence", "machine learning", "data analytics", "large language model"]),
+    ("机器人", ["robot", "robotics", "humanoid", "autonomous robot"]),
+    ("军工/国防", ["defense", "military", "missile", "army", "navy", "air force", "government contractor"]),
+    ("太空", ["space", "rocket", "satellite", "launch vehicle", "spacecraft"]),
+    ("生物科技", ["biotech", "clinical", "drug", "therapy", "pharmaceutical", "fda"]),
+    ("新能源", ["solar", "battery", "electric vehicle", "hydrogen", "renewable energy"]),
+    ("网络安全", ["cybersecurity", "zero trust", "endpoint security", "firewall", "security platform"]),
+]
+
+themes = []
+for name, words in theme_rules:
+    if any(word in text_blob for word in words):
+        themes.append(name)
+
+if "AI基础设施" in themes and "AI软件/数据" in themes:
+    themes.remove("AI软件/数据")
+
 theme_text = "、".join(themes) if themes else "未识别明显热点"
 
 recent_lows = last_52["Low"].nsmallest(8).mean()
