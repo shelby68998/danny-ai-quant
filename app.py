@@ -152,50 +152,50 @@ def fmp_get(endpoint, params=None):
     try:
         p = params or {}
         p["apikey"] = FMP_KEY
-        r = requests.get(f"{FMP_BASE}/{endpoint}", params=p, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-    except Exception:
-        return None
-    return None
+        url = f"{FMP_BASE}/{endpoint}"
+        r = requests.get(url, params=p, timeout=15)
 
+        if r.status_code != 200:
+            return {"_error": f"FMP HTTP {r.status_code}: {r.text[:300]}"}
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def get_price_safe(symbol):
-    try:
-        fmp_symbol = symbol.replace("^", "")
-        data = fmp_get(f"quote-short/{fmp_symbol}")
-        if data and isinstance(data, list) and len(data) > 0:
-            return float(data[0].get("price"))
-    except Exception:
-        pass
+        data = r.json()
 
-    try:
-        data = yf.download(symbol, period="5d", auto_adjust=False, progress=False)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
-        if data.empty:
-            return None
-        return float(data["Close"].dropna().iloc[-1])
-    except Exception:
-        return None
+        if isinstance(data, dict) and "Error Message" in data:
+            return {"_error": data.get("Error Message")}
+
+        return data
+
+    except Exception as e:
+        return {"_error": f"FMP request exception: {e}"}
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_stock_data_safe(symbol):
+    fmp_error = None
+
     try:
         quote = fmp_get(f"quote/{symbol}")
         profile = fmp_get(f"profile/{symbol}")
         ratios = fmp_get(f"ratios-ttm/{symbol}")
         growth = fmp_get(f"financial-growth/{symbol}", {"limit": 1})
-        hist = fmp_get(f"historical-price-full/{symbol}")
+        hist = fmp_get(f"historical-price-full/{symbol}", {"timeseries": 800})
+
+        for name, data in {
+            "quote": quote,
+            "profile": profile,
+            "ratios": ratios,
+            "growth": growth,
+            "hist": hist
+        }.items():
+            if isinstance(data, dict) and "_error" in data:
+                fmp_error = f"{name}: {data['_error']}"
 
         quote = quote[0] if quote and isinstance(quote, list) and len(quote) > 0 else {}
         profile = profile[0] if profile and isinstance(profile, list) and len(profile) > 0 else {}
         ratios = ratios[0] if ratios and isinstance(ratios, list) and len(ratios) > 0 else {}
         growth = growth[0] if growth and isinstance(growth, list) and len(growth) > 0 else {}
 
-        if hist and "historical" in hist:
+        if hist and isinstance(hist, dict) and "historical" in hist and len(hist["historical"]) > 0:
             df = pd.DataFrame(hist["historical"])
             df["date"] = pd.to_datetime(df["date"])
             df = df.sort_values("date").set_index("date")
@@ -224,20 +224,48 @@ def get_stock_data_safe(symbol):
 
             return info, df, None
 
-    except Exception:
-        pass
+    except Exception as e:
+        fmp_error = f"FMP exception: {e}"
 
     try:
         stock = yf.Ticker(symbol)
         info = stock.info
         time.sleep(0.3)
         df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
+
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        return info, df, None
+
+        if not df.empty:
+            return info, df, f"FMP失败，已使用Yahoo备用。FMP原因：{fmp_error}"
+
     except Exception as e:
-        return {}, pd.DataFrame(), str(e)
-    
+        return {}, pd.DataFrame(), f"FMP失败：{fmp_error}；Yahoo也失败：{e}"
+
+    return {}, pd.DataFrame(), f"FMP失败：{fmp_error}；Yahoo也没有返回数据。"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_price_safe(symbol):
+    try:
+        fmp_symbol = symbol.replace("^", "")
+        data = fmp_get(f"quote-short/{fmp_symbol}")
+        if data and isinstance(data, list) and len(data) > 0:
+            return float(data[0].get("price"))
+    except Exception:
+        pass
+
+    try:
+        data = yf.download(symbol, period="5d", auto_adjust=False, progress=False)
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        if data.empty:
+            return None
+        return float(data["Close"].dropna().iloc[-1])
+    except Exception:
+        return None
+
+
 
 spy_price = get_price_safe("SPY")
 qqq_price = get_price_safe("QQQ")
@@ -252,7 +280,7 @@ with m3: card("VIX", f"{vix_price:.2f}" if vix_price else "N/A")
 info, df, error_msg = get_stock_data_safe(ticker)
 
 if error_msg:
-    st.warning("数据源暂时受限或连接失败，可能是 Yahoo Finance 限流。请稍后刷新，或换一只股票测试。")
+    st.warning("数据源提示：系统已尝试 FMP 和 Yahoo。下面是具体原因。")
     st.caption(error_msg)
 
 if df.empty:
