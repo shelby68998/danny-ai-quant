@@ -1,9 +1,13 @@
 import time
+import os
+import html
+import math
 import requests
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
+from openai import OpenAI
 
 st.set_page_config(page_title="Danny AI Quant", layout="wide")
 
@@ -142,17 +146,29 @@ def fmt_pct(v):
 
 def fmt_num(v):
     return "N/A" if v is None else f"{v:.1f}"
-try:
-    FMP_KEY = st.secrets["FMP_API_KEY"]
-except Exception:
-    FMP_KEY = "GHehsVW9uu3dTBIdTymMu09U5lnwhXHW"
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
 
-def fmp_get(endpoint, params=None):
+
+def get_secret(name):
     try:
-        p = params or {}
+        return st.secrets[name]
+    except Exception:
+        return os.getenv(name)
+
+
+FMP_KEY = get_secret("FMP_API_KEY")
+
+FMP_STABLE_BASE = "https://financialmodelingprep.com/stable"
+
+
+def fmp_stable_get(endpoint, params=None):
+    if not FMP_KEY:
+        return {"_error": "缺少 FMP_API_KEY，已跳过 FMP 并使用 Yahoo 备用数据。"}
+
+    try:
+        p = dict(params or {})
         p["apikey"] = FMP_KEY
-        url = f"{FMP_BASE}/{endpoint}"
+
+        url = f"{FMP_STABLE_BASE}/{endpoint}"
         r = requests.get(url, params=p, timeout=15)
 
         if r.status_code != 200:
@@ -162,6 +178,10 @@ def fmp_get(endpoint, params=None):
 
         if isinstance(data, dict) and "Error Message" in data:
             return {"_error": data.get("Error Message")}
+        if isinstance(data, dict) and "error" in data:
+            return {"_error": data.get("error")}
+        if isinstance(data, dict) and "message" in data and len(data) <= 2:
+            return {"_error": data.get("message")}
 
         return data
 
@@ -169,101 +189,167 @@ def fmp_get(endpoint, params=None):
         return {"_error": f"FMP request exception: {e}"}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_stock_data_safe(symbol):
-    fmp_error = None
+def first_dict(data):
+    if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+        return data[0]
+    if isinstance(data, dict) and "_error" not in data:
+        return data
+    return {}
 
+
+def to_float(value):
     try:
-        quote = fmp_get(f"quote/{symbol}")
-        profile = fmp_get(f"profile/{symbol}")
-        ratios = fmp_get(f"ratios-ttm/{symbol}")
-        growth = fmp_get(f"financial-growth/{symbol}", {"limit": 1})
-        hist = None
+        if value in (None, "", "None", "N/A"):
+            return None
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+    except (TypeError, ValueError):
+        return None
 
-        for name, data in {
-            "quote": quote,
-            "profile": profile,
-            "ratios": ratios,
-            "growth": growth,
-            "hist": hist
-        }.items():
-            if isinstance(data, dict) and "_error" in data:
-                fmp_error = f"{name}: {data['_error']}"
 
-        quote = quote[0] if quote and isinstance(quote, list) and len(quote) > 0 else {}
-        profile = profile[0] if profile and isinstance(profile, list) and len(profile) > 0 else {}
-        ratios = ratios[0] if ratios and isinstance(ratios, list) and len(ratios) > 0 else {}
-        growth = growth[0] if growth and isinstance(growth, list) and len(growth) > 0 else {}
+def safe_number(value, default=0.0):
+    number = to_float(value)
+    return default if number is None else number
 
-        if hist and isinstance(hist, dict) and "historical" in hist and len(hist["historical"]) > 0:
-            df = pd.DataFrame(hist["historical"])
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date").set_index("date")
-            df = df.rename(columns={
-                "open": "Open",
-                "high": "High",
-                "low": "Low",
-                "close": "Close",
-                "volume": "Volume"
-            })
-            df = df[["Open", "High", "Low", "Close", "Volume"]]
 
-            info = {
-                "marketCap": profile.get("mktCap") or quote.get("marketCap"),
-                "beta": profile.get("beta"),
-                "trailingPE": quote.get("pe"),
-                "forwardPE": ratios.get("peRatioTTM"),
-                "priceToSalesTrailing12Months": ratios.get("priceToSalesRatioTTM"),
-                "profitMargins": ratios.get("netProfitMarginTTM"),
-                "revenueGrowth": growth.get("revenueGrowth"),
-                "grossMargins": ratios.get("grossProfitMarginTTM"),
-                "sector": profile.get("sector", "N/A"),
-                "industry": profile.get("industry", "N/A"),
-                "longBusinessSummary": profile.get("description", "")
-            }
+def fmp_symbol_for(symbol):
+    return symbol.strip().upper()
 
-            return info, df, None
 
-    except Exception as e:
-        fmp_error = f"FMP exception: {e}"
+def normalize_ohlcv(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
 
-    try:
-        stock = yf.Ticker(symbol)
-        info = stock.info
-        time.sleep(0.3)
-        df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+    rename_map = {
+        "date": "date",
+        "open": "Open",
+        "high": "High",
+        "low": "Low",
+        "close": "Close",
+        "adjClose": "Adj Close",
+        "volume": "Volume",
+    }
+    df = df.rename(columns=rename_map)
+    required_cols = ["Open", "High", "Low", "Close", "Volume"]
 
-        if not df.empty:
-            return info, df, f"FMP失败，已使用Yahoo备用。FMP原因：{fmp_error}"
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.dropna(subset=["date"]).sort_values("date").set_index("date")
 
-    except Exception as e:
-        return {}, pd.DataFrame(), f"FMP失败：{fmp_error}；Yahoo也失败：{e}"
+    if not all(c in df.columns for c in required_cols):
+        return pd.DataFrame()
 
-    return {}, pd.DataFrame(), f"FMP失败：{fmp_error}；Yahoo也没有返回数据。"
+    df = df[required_cols].apply(pd.to_numeric, errors="coerce").dropna(subset=["Close"])
+    df.index = pd.to_datetime(df.index)
+    return df.sort_index()
+
+
+def render_text_box(text):
+    if not text:
+        return
+    safe_text = html.escape(text).replace("\n", "<br>")
+    st.markdown(f"""
+    <div class="ai-box">
+    {safe_text}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def get_openai_client():
+    key = get_secret("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("缺少 OPENAI_API_KEY，请先在 Streamlit secrets 或环境变量里设置。")
+    return OpenAI(api_key=key)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_price_safe(symbol):
-    try:
-        fmp_symbol = symbol.replace("^", "")
-        data = fmp_get(f"quote-short/{fmp_symbol}")
-        if data and isinstance(data, list) and len(data) > 0:
-            return float(data[0].get("price"))
-    except Exception:
-        pass
+    fmp_symbol = fmp_symbol_for(symbol)
+
+    data = fmp_stable_get("quote-short", {"symbol": fmp_symbol})
+
+    if data and isinstance(data, list) and len(data) > 0:
+        price = to_float(data[0].get("price"))
+        if price is not None:
+            return price
 
     try:
         data = yf.download(symbol, period="5d", auto_adjust=False, progress=False)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.get_level_values(0)
+        data = normalize_ohlcv(data)
+
         if data.empty:
             return None
-        return float(data["Close"].dropna().iloc[-1])
+
+        return safe_number(data["Close"].dropna().iloc[-1])
+
     except Exception:
         return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_stock_data_safe(symbol):
+    fmp_errors = []
+    fmp_symbol = fmp_symbol_for(symbol)
+
+    quote_raw = fmp_stable_get("quote", {"symbol": fmp_symbol})
+    profile_raw = fmp_stable_get("profile", {"symbol": fmp_symbol})
+    ratios_raw = fmp_stable_get("ratios-ttm", {"symbol": fmp_symbol})
+    growth_raw = fmp_stable_get("income-statement-growth", {"symbol": fmp_symbol, "limit": 1})
+    hist_raw = fmp_stable_get("historical-price-eod/full", {"symbol": fmp_symbol})
+
+    for name, data in {
+        "quote": quote_raw,
+        "profile": profile_raw,
+        "ratios": ratios_raw,
+        "growth": growth_raw,
+        "history": hist_raw
+    }.items():
+        if isinstance(data, dict) and "_error" in data:
+            fmp_errors.append(f"{name}: {data['_error']}")
+
+    quote = first_dict(quote_raw)
+    profile = first_dict(profile_raw)
+    ratios = first_dict(ratios_raw)
+    growth = first_dict(growth_raw)
+
+    info = {
+        "marketCap": to_float(profile.get("marketCap") or profile.get("mktCap") or quote.get("marketCap")),
+        "beta": to_float(profile.get("beta") or quote.get("beta")),
+        "trailingPE": to_float(quote.get("pe") or quote.get("priceEarningsRatio") or ratios.get("priceEarningsRatioTTM")),
+        "forwardPE": to_float(ratios.get("peRatioTTM")),
+        "priceToSalesTrailing12Months": to_float(ratios.get("priceToSalesRatioTTM")),
+        "profitMargins": to_float(ratios.get("netProfitMarginTTM")),
+        "revenueGrowth": to_float(growth.get("growthRevenue") or growth.get("revenueGrowth")),
+        "grossMargins": to_float(ratios.get("grossProfitMarginTTM")),
+        "sector": profile.get("sector", "N/A"),
+        "industry": profile.get("industry", "N/A"),
+        "longBusinessSummary": profile.get("description", "")
+    }
+
+    if isinstance(hist_raw, list) and len(hist_raw) > 0:
+        df = normalize_ohlcv(pd.DataFrame(hist_raw))
+        if not df.empty:
+            return info, df, None
+
+    try:
+        df = yf.download(symbol, period="max", auto_adjust=False, progress=False)
+        df = normalize_ohlcv(df)
+
+        if not df.empty:
+            note = "；".join(fmp_errors) if fmp_errors else "FMP历史K线未返回可用数据，已使用Yahoo备用。"
+            return info, df, note
+
+    except Exception as e:
+        note = "；".join(fmp_errors) if fmp_errors else "FMP无具体错误。"
+        return {}, pd.DataFrame(), f"FMP失败：{note}；Yahoo也失败：{e}"
+
+    note = "；".join(fmp_errors) if fmp_errors else "FMP和Yahoo都没有返回可用数据。"
+    return {}, pd.DataFrame(), note
 
 
 
@@ -301,20 +387,20 @@ high_close = (df["High"] - df["Close"].shift()).abs()
 low_close = (df["Low"] - df["Close"].shift()).abs()
 df["ATR"] = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1).rolling(14).mean()
 
-current_price = float(df["Close"].iloc[-1])
-all_time_high = float(df["High"].max())
-drawdown = (current_price - all_time_high) / all_time_high * 100
-rsi = float(df["RSI"].iloc[-1])
-atr = float(df["ATR"].iloc[-1])
-ma20 = float(df["MA20"].iloc[-1])
-ma50 = float(df["MA50"].iloc[-1])
-ma200 = float(df["MA200"].iloc[-1])
+current_price = safe_number(df["Close"].iloc[-1])
+all_time_high = safe_number(df["High"].max(), current_price)
+drawdown = (current_price - all_time_high) / all_time_high * 100 if all_time_high else 0
+rsi = safe_number(df["RSI"].iloc[-1], 50)
+atr = safe_number(df["ATR"].iloc[-1])
+ma20 = safe_number(df["MA20"].iloc[-1], current_price)
+ma50 = safe_number(df["MA50"].iloc[-1], current_price)
+ma200 = safe_number(df["MA200"].iloc[-1], current_price)
 
 last_52 = df.tail(252)
-high_52 = float(last_52["High"].max())
-low_52 = float(last_52["Low"].min())
-current_volume = float(df["Volume"].iloc[-1])
-avg_volume = float(df["Volume"].tail(30).mean())
+high_52 = safe_number(last_52["High"].max(), current_price)
+low_52 = safe_number(last_52["Low"].min(), current_price)
+current_volume = safe_number(df["Volume"].iloc[-1])
+avg_volume = safe_number(df["Volume"].tail(30).mean())
 volume_ratio = current_volume / avg_volume if avg_volume else 0
 
 market_cap = info.get("marketCap")
@@ -601,7 +687,6 @@ with a2:
         <ul>{''.join([f"<li>{x}</li>" for x in risk])}</ul>
     </div>
     """, unsafe_allow_html=True)
-from openai import OpenAI
 
 st.subheader("🧠 GPT AI 分析中心")
 
@@ -637,7 +722,7 @@ if st.button("🚨 为什么暴跌？"):
 
 """
 
-                client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                client = get_openai_client()
 
                 prompt = f"""
 你是一位专业美股暴跌原因分析师。
@@ -693,17 +778,11 @@ PE：{fmt_num(trailing_pe)}
             except Exception as e:
                 st.error(f"暴跌分析失败: {e}")
 
-    st.markdown(f"""
-    <div class="ai-box">
-    {st.session_state[crash_cache_key].replace(chr(10), "<br>")}
-    </div>
-    """, unsafe_allow_html=True)
+    render_text_box(st.session_state[crash_cache_key])
 
 if st.button("🧹 清除暴跌分析缓存"):
     st.session_state[crash_cache_key] = None
     st.rerun()
-
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 cache_key_deep = f"{ticker}_gpt_deep"
 cache_key_plan = f"{ticker}_gpt_plan"
@@ -714,12 +793,7 @@ for key in [cache_key_deep, cache_key_plan, cache_key_risk]:
         st.session_state[key] = None
 
 def show_gpt_result(result):
-    if result:
-        st.markdown(f"""
-        <div class="ai-box">
-        {result.replace(chr(10), "<br>")}
-        </div>
-        """, unsafe_allow_html=True)
+    render_text_box(result)
 
 b1, b2, b3 = st.columns(3)
 
@@ -728,6 +802,7 @@ with b1:
         if st.session_state[cache_key_deep] is None:
             with st.spinner("GPT 正在深度分析..."):
                 try:
+                    client = get_openai_client()
                     prompt = f"""
 你是一位顶级美股基金经理。
 
@@ -784,6 +859,7 @@ with b2:
         if st.session_state[cache_key_plan] is None:
             with st.spinner("GPT 正在制定交易计划..."):
                 try:
+                    client = get_openai_client()
                     prompt = f"""
 你是一位职业交易员。
 
@@ -832,6 +908,7 @@ with b3:
         if st.session_state[cache_key_risk] is None:
             with st.spinner("GPT 正在审查风险..."):
                 try:
+                    client = get_openai_client()
                     prompt = f"""
 你是一位极度谨慎的做空机构分析师。
 
@@ -909,7 +986,7 @@ if st.button("🧠 GPT新闻情绪分析"):
         with st.spinner("GPT 正在分析新闻情绪..."):
 
             try:
-                client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                client = get_openai_client()
 
                 prompt = f"""
 你是一位专业美股新闻与市场情绪分析师。
@@ -963,12 +1040,7 @@ Danny模型：{danny_view}
                 st.error(f"新闻情绪分析失败: {e}")
 
 if st.session_state[news_cache_key]:
-
-    st.markdown(f"""
-    <div class="ai-box">
-    {st.session_state[news_cache_key].replace(chr(10), "<br>")}
-    </div>
-    """, unsafe_allow_html=True)
+    render_text_box(st.session_state[news_cache_key])
 
 if st.button("🧹 清除新闻情绪缓存"):
     st.session_state[news_cache_key] = None
@@ -1010,7 +1082,7 @@ try:
         if st.button("🧠 GPT解读今日风口"):
             with st.spinner("GPT 正在解读风口趋势..."):
                 try:
-                    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+                    client = get_openai_client()
 
                     theme_text_for_gpt = hot_df[show_cols].to_string(index=False)
 
@@ -1045,11 +1117,7 @@ try:
 
                     result = response.choices[0].message.content
 
-                    st.markdown(f"""
-                    <div class="ai-box">
-                    {result.replace(chr(10), "<br>")}
-                    </div>
-                    """, unsafe_allow_html=True)
+                    render_text_box(result)
 
                 except Exception as e:
                     st.error(f"风口GPT分析失败: {e}")
